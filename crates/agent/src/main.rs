@@ -45,10 +45,11 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
-    /// Change settings: name, relay, terminal
+    /// Change settings: `config terminal on`, `config name <text>`, `config relay <url>`
+    /// (`config set terminal on` also works, and `config terminal` prints the current value)
     Config {
-        key: String,
-        value: Option<String>,
+        #[arg(num_args = 1..=3, value_name = "[set] KEY [VALUE]")]
+        args: Vec<String>,
     },
 }
 
@@ -133,7 +134,14 @@ fn main() -> Result<()> {
             println!("revoked; open sessions from that phone close within ~20s");
             Ok(())
         }
-        Cmd::Config { key, value } => {
+        Cmd::Config { args } => {
+            let mut args = args.into_iter();
+            let mut key = args.next().unwrap_or_default();
+            // Accept the natural `config set <key> <value>` spelling as well as `config <key> <value>`.
+            if key == "set" || key == "get" {
+                key = args.next().ok_or_else(|| anyhow!("which setting? name, relay, or terminal"))?;
+            }
+            let value = args.next();
             let mut c = Config::load()?;
             match (key.as_str(), value) {
                 ("terminal", Some(v)) => c.terminal_enabled = matches!(v.as_str(), "on" | "true" | "1" | "yes"),
