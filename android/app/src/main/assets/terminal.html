@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<link rel="stylesheet" href="xterm.css" />
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #t { position: absolute; top: 0; left: 0; padding: 4px; box-sizing: border-box; }
+</style>
+</head>
+<body>
+<div id="t"></div>
+<script>window.onerror = function (m, s, l, c) { console.log('JSERR ' + m + ' @' + s + ':' + l + ':' + c); };</script>
+<script src="xterm.js"></script>
+<script src="addon-fit.js"></script>
+<script>
+  const term = new Terminal({
+    fontSize: 13,
+    fontFamily: 'monospace',
+    cursorBlink: true,
+    scrollback: 5000,
+    theme: { background: '#000000', foreground: '#e6f1ef', cursor: '#2dd4bf', selectionBackground: '#134e4a' },
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById('t'));
+  fit.fit();
+
+  // keystrokes -> base64(UTF-8) -> Kotlin
+  const enc = new TextEncoder();
+  term.onData(d => {
+    const bytes = enc.encode(d);
+    let bin = '';
+    bytes.forEach(b => bin += String.fromCharCode(b));
+    Android.onInput(btoa(bin));
+  });
+  term.onResize(s => Android.onResize(s.cols, s.rows));
+
+  // laptop output (raw bytes as base64) <- Kotlin
+  window.writeB64 = function (b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    term.write(bytes);
+  };
+  window.clearTerm = () => term.reset();
+
+  // The WebView is laid out after the page loads, so refit whenever the container changes size
+  // and a few times early on. Without this xterm can stay stuck at 1 row.
+  function refit() {
+    try {
+      const el = document.getElementById('t');
+      // Android WebView reports html/body as 0px tall, so percentage heights collapse.
+      // Size from the real viewport instead.
+      el.style.width = window.innerWidth + 'px';
+      el.style.height = window.innerHeight + 'px';
+      fit.fit();
+    } catch (e) { console.log('fit failed ' + e); }
+  }
+  new ResizeObserver(refit).observe(document.getElementById('t'));
+  window.addEventListener('resize', refit);
+  [50, 200, 600, 1500].forEach(ms => setTimeout(refit, ms));
+  Android.onReady(term.cols, term.rows);
+</script>
+</body>
+</html>
