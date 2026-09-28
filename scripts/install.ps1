@@ -35,10 +35,14 @@ Invoke-WebRequest $asset.browser_download_url -OutFile $zip -UseBasicParsing
 
 # Re-running this script to update must not fail because the OLD remotectl.exe is still running
 # (as the scheduled task, or in a terminal someone left open) and holding its own file locked.
-# Best effort throughout: the task may not exist yet, nothing may be running, or (unlikely on a
-# normal Windows install) these tools might not be on PATH at all.
-if (Get-Command schtasks -ErrorAction SilentlyContinue) { & schtasks /end /tn remotectl *> $null }
-if (Get-Command taskkill -ErrorAction SilentlyContinue) { & taskkill /IM remotectl.exe /F *> $null }
+# Best effort throughout: the task may not exist yet, or nothing may be running — and in that
+# ordinary case, both tools print an "ERROR: ... not found" line to stderr and exit non-zero.
+# Under $ErrorActionPreference = 'Stop', Windows PowerShell promotes that stderr line into a
+# *terminating* error, which would abort this entire script on the most common case of all: a
+# first-time install with nothing to stop. `*> $null` redirects the stream but does not stop the
+# promotion from happening first, so only try/catch reliably swallows it.
+try { & schtasks /end /tn remotectl 2>&1 | Out-Null } catch {}
+try { & taskkill /IM remotectl.exe /F 2>&1 | Out-Null } catch {}
 
 $extractTmp = Join-Path $env:TEMP "remotectl-extract-$PID"
 if (Test-Path $extractTmp) { Remove-Item $extractTmp -Recurse -Force }
@@ -68,6 +72,12 @@ if (($env:Path -split ';') -notcontains $installDir) {
 }
 
 Write-Host "`nInstalled remotectl $($release.tag_name) to $installDir`n"
+
+# From here on we're just running remotectl.exe itself, which prints its own clear messages and
+# is expected to exit non-zero in perfectly normal situations (a `pair` that times out waiting for
+# a phone, for instance). Without relaxing this, the same stderr-promotion problem worked around
+# above would replace that clean message with a wall of PowerShell error text.
+$ErrorActionPreference = 'Continue'
 
 $configPath = Join-Path $env:USERPROFILE '.remotectl\config.json'
 if (Test-Path $configPath) {
