@@ -2,7 +2,9 @@
 //! service: the agent must live in your GUI session to lock the screen and launch apps, and
 //! it should never run with more privilege than you have.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
+#[cfg(target_os = "macos")]
+use anyhow::anyhow;
 
 use crate::config;
 
@@ -35,11 +37,34 @@ fn uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
+/// Poll the agent's log for a few seconds and report whether it actually reached the relay,
+/// instead of just assuming the OS accepted the auto-start registration. Catches the case where
+/// the service was registered but the process itself failed or crashed immediately.
+fn confirm_started(log: &std::path::Path) {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(log) {
+            if text.contains("connected to relay") {
+                println!("confirmed: the agent connected to the relay");
+                return;
+            }
+            if let Some(line) = text.lines().rev().find(|l| l.contains("ERROR") || l.contains("WARN")) {
+                println!("started, but its log shows a problem:\n  {}", line.trim());
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    println!("started, but hasn't confirmed a relay connection yet (may still be starting) — check:\n  {}", log.display());
+}
+
 #[cfg(target_os = "macos")]
 pub fn install() -> Result<()> {
     use std::process::Command;
     let exe = agent_exe()?;
     let log = config::log_path()?;
+    let _ = std::fs::remove_file(&log); // stale content would confuse confirm_started below
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -72,6 +97,7 @@ pub fn install() -> Result<()> {
         bail!("launchctl bootstrap failed");
     }
     println!("installed: starts at login and is running now\n  log: {}", log.display());
+    confirm_started(&log);
     Ok(())
 }
 
@@ -93,15 +119,31 @@ pub fn uninstall() -> Result<()> {
 pub fn install() -> Result<()> {
     use std::process::Command;
     let exe = agent_exe()?;
-    let tr = format!("\"{exe}\" run");
+    let log = config::log_path()?;
+    let _ = std::fs::remove_file(&log);
+    // `run --background` frees its own console right after starting, so Task Scheduler's usual
+    // console window for a logon task disappears instantly instead of sitting there as something
+    // that kills the agent if closed. It logs to file, since nothing is watching a console.
+    let tr = format!("\"{exe}\" run --background");
     let st = Command::new("schtasks")
         .args(["/create", "/tn", "remotectl", "/tr", &tr, "/sc", "onlogon", "/rl", "limited", "/f"])
         .status()?;
     if !st.success() {
-        bail!("schtasks /create failed");
+        bail!(
+            "schtasks /create failed (exit {:?}). A locked-down or managed laptop may block Task \
+             Scheduler; you can still run the agent by hand with:\n  \"{exe}\" run",
+            st.code()
+        );
     }
-    let _ = Command::new("schtasks").args(["/run", "/tn", "remotectl"]).status();
-    println!("installed: starts at logon and is running now");
+    // End any instance from a previous `install` or a manually-started `run` first, so two
+    // agents never fight over the same relay room.
+    let _ = Command::new("schtasks").args(["/end", "/tn", "remotectl"]).status();
+    let st2 = Command::new("schtasks").args(["/run", "/tn", "remotectl"]).status()?;
+    if !st2.success() {
+        bail!("schtasks created the task but `/run` failed to start it (exit {:?})", st2.code());
+    }
+    println!("installed: starts at logon (no window to accidentally close) and is running now\n  log: {}", log.display());
+    confirm_started(&log);
     Ok(())
 }
 
@@ -116,10 +158,10 @@ pub fn uninstall() -> Result<()> {
 #[cfg(not(any(target_os = "macos", windows)))]
 pub fn install() -> Result<()> {
     let _ = (agent_exe()?, config::log_path()?);
-    Err(anyhow!("auto-start is only implemented for macOS and Windows; run `remotectl run` manually"))
+    Err(anyhow::anyhow!("auto-start is only implemented for macOS and Windows; run `remotectl run` manually"))
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
 pub fn uninstall() -> Result<()> {
-    Err(anyhow!("unsupported OS"))
+    Err(anyhow::anyhow!("unsupported OS"))
 }

@@ -29,8 +29,13 @@ enum Cmd {
         #[arg(long, env = "REMOTECTL_RELAY")]
         relay: Option<String>,
     },
-    /// Run the agent in the foreground (what the auto-start service runs)
-    Run,
+    /// Run the agent in the foreground
+    Run {
+        /// Used only by the auto-start service: logs to file instead of the console, and on
+        /// Windows detaches from the console window so there's nothing to accidentally close.
+        #[arg(long, hide = true)]
+        background: bool,
+    },
     /// Start the agent automatically at login, and start it now
     Install,
     /// Remove auto-start
@@ -69,6 +74,17 @@ fn short(key: &str) -> String {
     key.chars().take(10).collect()
 }
 
+/// Task Scheduler creates a console window for any console-subsystem exe it launches in an
+/// interactive logon session, and closing that window kills the process. Detaching from it
+/// right after startup makes the window disappear (there's nothing else attached to it), while
+/// leaving a manually-run `remotectl run` untouched since this is only called with `--background`.
+#[cfg(windows)]
+fn windows_hide_console() {
+    unsafe {
+        windows_sys::Win32::System::Console::FreeConsole();
+    }
+}
+
 fn main() -> Result<()> {
     // rustls needs an explicit crypto provider when several are compiled in; without this every
     // wss:// connection panics. (Local ws:// testing never exercises TLS, so it hides this.)
@@ -78,10 +94,24 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
     match cli.cmd {
-        Cmd::Run => {
-            tracing_subscriber::fmt()
-                .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-                .init();
+        Cmd::Run { background } => {
+            let filter = || tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+            if background {
+                // No one is watching a console here, so write to the log file instead of stdout
+                // (on Windows, nothing was writing to a log at all before this — the log file
+                // is the only way to see what happened when the process isn't attached to a
+                // window). Clear it first so a fresh run's success is unambiguous.
+                let log = config::log_path()?;
+                let _ = std::fs::remove_file(&log);
+                let file = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
+                tracing_subscriber::fmt().with_env_filter(filter()).with_ansi(false).with_writer(move || {
+                    file.try_clone().expect("clone log file handle")
+                }).init();
+                #[cfg(windows)]
+                windows_hide_console();
+            } else {
+                tracing_subscriber::fmt().with_env_filter(filter()).init();
+            }
             rt.block_on(daemon::run())
         }
         Cmd::Pair { relay } => pair(relay),
@@ -107,6 +137,7 @@ fn main() -> Result<()> {
                 Some(pid) => println!("agent       running (pid {pid})"),
                 None => println!("agent       NOT running (start with: remotectl install)"),
             }
+            println!("log         {}", config::log_path()?.display());
             Ok(())
         }
         Cmd::Phones => {

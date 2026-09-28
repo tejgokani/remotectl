@@ -21,13 +21,28 @@ cd relay-cloudflare && pnpm install && pnpm exec wrangler login && pnpm exec wra
 # prints https://remotectl-relay.<you>.workers.dev
 ```
 
-**2. Install the agent on each laptop** and pair it:
+**2. Install the agent on each laptop** and pair it.
+
+macOS:
 
 ```bash
-brew install tejgokani/remotectl/remotectl      # macOS
+brew install tejgokani/remotectl/remotectl
 remotectl pair --relay wss://remotectl-relay.<you>.workers.dev   # shows a QR code
 remotectl install                               # start now and at every login
 ```
+
+Windows — one PowerShell command downloads it to a fixed path, puts it on your PATH, and pairs:
+
+```powershell
+&([scriptblock]::Create((irm https://raw.githubusercontent.com/tejgokani/remotectl/main/scripts/install.ps1))) -Relay wss://remotectl-relay.<you>.workers.dev
+```
+
+(Drop `-Relay ...` to just install without pairing yet; re-run the same command any time to update —
+it's idempotent.)
+
+Linux — no installer script yet; grab `remotectl-*-linux-x64.tar.gz` from the
+[releases page](https://github.com/tejgokani/remotectl/releases), then `pair` the same way as macOS
+(auto-start isn't wired up for Linux yet — see Limits).
 
 **3. Install the Android app** (`remotectl-<version>.apk` on the
 [releases page](https://github.com/tejgokani/remotectl/releases)) and tap **Add laptop → Scan QR code**.
@@ -61,8 +76,11 @@ Other commands: `remotectl status`, `phones`, `unpair <n>|--all`, `uninstall`,
 ## Limits
 
 - A sleeping or shut-down laptop can't be reached; the phone shows it as offline.
-- macOS is the tested platform. **Windows code exists but is untested on a real machine.** Linux is not
-  supported by the agent yet.
+- macOS is confirmed working end to end (pair, stats, apps, terminal, lock).
+- Windows compiles clean and pairing has been run on a real machine; stats/apps/terminal/lock on a
+  real Windows laptop are implemented but not yet confirmed by anyone.
+- Linux compiles and can pair, show stats, and run the terminal, but has no app list, lock, or
+  auto-start yet (those live in per-OS modules — `crates/agent/src/{apps,lock,install}.rs`).
 - The Android app needs Google Play services for the QR scanner (or paste the invite instead).
 
 ## Layout
